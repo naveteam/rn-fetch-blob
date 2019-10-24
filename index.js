@@ -137,7 +137,9 @@ function fetchFile(options = {}, method, url, headers = {}, body):Promise {
   let _progress, _uploadProgress, _stateChange
 
   switch(method.toLowerCase()) {
-
+    case 'get':
+      promise = fs.stat(url).then(stat => stat)
+    break
     case 'post':
     break
 
@@ -164,7 +166,7 @@ function fetchFile(options = {}, method, url, headers = {}, body):Promise {
           respType : 'text',
           rnfbEncode : headers.encoding || 'utf8'
         }
-        _stateChange(info)
+        _stateChange && _stateChange(info)
         stream.onData((chunk) => {
           _progress && _progress(cursor, total, chunk)
           if(headers.noCache)

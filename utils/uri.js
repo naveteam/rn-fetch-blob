@@ -4,6 +4,9 @@ export default {
     if(typeof uri !== 'string')
       return false
     return /^RNFetchBlob-file\:\/\//.test(uri)
+    || /^content\:\/\//.test(uri)
+    || /^file\:\/\//.test(uri)
+    || /^RNFetchBlob-content\:\/\//.test(uri)
   },
 
   isJSONStreamURI : (uri:string):boolean => {
@@ -23,6 +26,7 @@ export default {
 
   unwrapFileURI : (uri:string):string => {
     return String(uri).replace(/^RNFetchBlob-file\:\/\//, '')
+      .replace( /^RNFetchBlob-content:\:\/\//, '')
   }
 
 }
