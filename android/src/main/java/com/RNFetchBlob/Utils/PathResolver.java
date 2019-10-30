@@ -1,6 +1,8 @@
 package com.RNFetchBlob.Utils;
 
 import android.annotation.TargetApi;
+import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
 import android.content.Context;
 import android.database.Cursor;
 import android.net.Uri;
@@ -10,12 +12,23 @@ import android.provider.MediaStore;
 import android.content.ContentUris;
 import android.os.Environment;
 import android.content.ContentResolver;
+import android.provider.OpenableColumns;
+import android.util.Log;
+
 import com.RNFetchBlob.RNFetchBlobUtils;
+
 import java.io.File;
+import java.io.IOException;
 import java.io.InputStream;
 import java.io.FileOutputStream;
+import java.io.BufferedOutputStream;
 
 public class PathResolver {
+
+    static final String TAG = "FileUtils";
+    public static final String DOCUMENTS_DIR = "documents";
+    private static final boolean DEBUG = false;
+
     @TargetApi(19)
     public static String getRealPathFromURI(final Context context, final Uri uri) {
 
@@ -37,25 +50,40 @@ public class PathResolver {
             }
             // DownloadsProvider
             else if (isDownloadsDocument(uri)) {
-                try {
-                    final String id = DocumentsContract.getDocumentId(uri);
-                    //Starting with Android O, this "id" is not necessarily a long (row number),
-                    //but might also be a "raw:/some/file/path" URL
-                    if (id != null && id.startsWith("raw:/")) {
-                        Uri rawuri = Uri.parse(id);
-                        String path = rawuri.getPath();
-                        return path;
-                    }
-                    final Uri contentUri = ContentUris.withAppendedId(
-                            Uri.parse("content://downloads/public_downloads"), Long.valueOf(id));
 
-                    return getDataColumn(context, contentUri, null, null);
+                final String id = DocumentsContract.getDocumentId(uri);
+
+                if (id != null && id.startsWith("raw:")) {
+                    return id.substring(4);
                 }
-                catch (Exception ex) {
-                    //something went wrong, but android should still be able to handle the original uri by returning null here (see readFile(...))
-                    return null;
+
+                String[] contentUriPrefixesToTry = new String[]{
+                        "content://downloads/public_downloads",
+                        "content://downloads/my_downloads",
+                        "content://downloads/all_downloads"
+                };
+
+                for (String contentUriPrefix : contentUriPrefixesToTry) {
+                    Uri contentUri = ContentUris.withAppendedId(Uri.parse(contentUriPrefix), Long.valueOf(id));
+                    try {
+                        String path = getDataColumn(context, contentUri, null, null);
+                        if (path != null) {
+                            return path;
+                        }
+                    } catch (Exception e) {}
                 }
-                
+
+                // path could not be retrieved using ContentResolver, therefore copy file to accessible cache using streams
+                String fileName = getFileName(context, uri);
+                File cacheDir = getDocumentCacheDir(context);
+                File file = generateFileName(fileName, cacheDir);
+                String destinationPath = null;
+                if (file != null) {
+                    destinationPath = file.getAbsolutePath();
+                    saveFileFromUri(context, uri, destinationPath);
+                }
+
+                return destinationPath;
             }
             // MediaProvider
             else if (isMediaDocument(uri)) {
@@ -212,4 +240,138 @@ public class PathResolver {
         return "com.google.android.apps.photos.content".equals(uri.getAuthority());
     }
 
+    public static String getFileName(@NonNull Context context, Uri uri) {
+        String mimeType = context.getContentResolver().getType(uri);
+        String filename = null;
+
+        if (mimeType == null && context != null) {
+            String path = getPath(context, uri);
+            if (path == null) {
+                filename = getName(uri.toString());
+            } else {
+                File file = new File(path);
+                filename = file.getName();
+            }
+        } else {
+            Cursor returnCursor = context.getContentResolver().query(uri, null,
+                    null, null, null);
+            if (returnCursor != null) {
+                int nameIndex = returnCursor.getColumnIndex(OpenableColumns.DISPLAY_NAME);
+                returnCursor.moveToFirst();
+                filename = returnCursor.getString(nameIndex);
+                returnCursor.close();
+            }
+        }
+
+        return filename;
+    }
+
+    public static String getName(String filename) {
+        if (filename == null) {
+            return null;
+        }
+        int index = filename.lastIndexOf('/');
+        return filename.substring(index + 1);
+    }
+
+    public static File getDocumentCacheDir(@NonNull Context context) {
+        File dir = new File(context.getCacheDir(), DOCUMENTS_DIR);
+        if (!dir.exists()) {
+            dir.mkdirs();
+        }
+        logDir(context.getCacheDir());
+        logDir(dir);
+
+        return dir;
+    }
+
+    @Nullable
+    public static File generateFileName(@Nullable String name, File directory) {
+        if (name == null) {
+            return null;
+        }
+
+        File file = new File(directory, name);
+
+        if (file.exists()) {
+            String fileName = name;
+            String extension = "";
+            int dotIndex = name.lastIndexOf('.');
+            if (dotIndex > 0) {
+                fileName = name.substring(0, dotIndex);
+                extension = name.substring(dotIndex);
+            }
+
+            int index = 0;
+
+            while (file.exists()) {
+                index++;
+                name = fileName + '(' + index + ')' + extension;
+                file = new File(directory, name);
+            }
+        }
+
+        try {
+            if (!file.createNewFile()) {
+                return null;
+            }
+        } catch (IOException e) {
+            Log.w(TAG, e);
+            return null;
+        }
+
+        logDir(directory);
+
+        return file;
+    }
+
+    private static void logDir(File dir) {
+        if(!DEBUG) return;
+        Log.d(TAG, "Dir=" + dir);
+        File[] files = dir.listFiles();
+        for (File file : files) {
+            Log.d(TAG, "File=" + file.getPath());
+        }
+    }
+
+    private static void saveFileFromUri(Context context, Uri uri, String destinationPath) {
+        InputStream is = null;
+        BufferedOutputStream bos = null;
+        try {
+            is = context.getContentResolver().openInputStream(uri);
+            bos = new BufferedOutputStream(new FileOutputStream(destinationPath, false));
+            byte[] buf = new byte[1024];
+            is.read(buf);
+            do {
+                bos.write(buf);
+            } while (is.read(buf) != -1);
+        } catch (IOException e) {
+            e.printStackTrace();
+        } finally {
+            try {
+                if (is != null) is.close();
+                if (bos != null) bos.close();
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+        }
+    }
+
+     /**
+     * Get a file path from a Uri. This will get the the path for Storage Access
+     * Framework Documents, as well as the _data field for the MediaStore and
+     * other file-based ContentProviders.<br>
+     * <br>
+     * Callers should check whether the path is local before assuming it
+     * represents a local file.
+     *
+     * @param context The context.
+     * @param uri     The Uri to query.
+     * @see #isLocal(String)
+     * @see #getFile(Context, Uri)
+     */
+    public static String getPath(final Context context, final Uri uri) {
+        String absolutePath = getRealPathFromURI(context, uri);
+        return absolutePath != null ? absolutePath : uri.toString();
+    }
 }
